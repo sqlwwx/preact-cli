@@ -1,5 +1,5 @@
 const { join } = require('path');
-const { readFile } = require('fs.promised');
+const { readFile } = require('../lib/fs');
 const looksLike = require('html-looks-like');
 const { create, build } = require('./lib/cli');
 const { snapshot, isMatch } = require('./lib/utils');
@@ -10,7 +10,11 @@ const images = require('./images/build');
 // const ours = ['empty', 'full', 'simple', 'root'];
 const ours = ['default'];
 
-const prerenderUrlFiles = ['prerender-urls.json', 'prerender-urls.js'];
+const prerenderUrlFiles = [
+	'prerender-urls.json',
+	'prerender-urls.js',
+	'prerender-urls.promise.js',
+];
 
 async function getIndex(dir, file = 'index.html') {
 	file = join(dir, `build/${file}`);
@@ -126,5 +130,10 @@ describe('preact build', () => {
 		let html = await readFile(file, 'utf-8');
 
 		looksLike(html, images.template);
+	});
+
+	it('should patch global location object', async () => {
+		let dir = await subject('location-patch');
+		expect(() => build(dir)).not.toThrow();
 	});
 });

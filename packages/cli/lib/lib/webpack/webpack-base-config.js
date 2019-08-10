@@ -4,11 +4,15 @@ const { resolve } = require('path');
 const { readFileSync, existsSync } = require('fs');
 const SizePlugin = require('size-plugin');
 const autoprefixer = require('autoprefixer');
+const browserslist = require('browserslist');
 const requireRelative = require('require-relative');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const FixStyleOnlyEntriesPlugin = require('webpack-fix-style-only-entries');
 const ProgressBarPlugin = require('progress-bar-webpack-plugin');
 const ReplacePlugin = require('webpack-plugin-replace');
+const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
 const createBabelConfig = require('../babel-config');
+const loadPostcssConfig = require('postcss-load-config');
 
 function readJson(file) {
 	try {
@@ -17,15 +21,15 @@ function readJson(file) {
 }
 
 // attempt to resolve a dependency, giving $CWD/node_modules priority:
-function resolveDep(dep, cwd) {
-	try {
-		return requireRelative.resolve(dep, cwd || process.cwd());
-	} catch (e) {}
-	try {
-		return require.resolve(dep);
-	} catch (e) {}
-	return dep;
-}
+// function resolveDep(dep, cwd) {
+// 	try {
+// 		return requireRelative.resolve(dep, cwd || process.cwd());
+// 	} catch (e) {}
+// 	try {
+// 		return require.resolve(dep);
+// 	} catch (e) {}
+// 	return dep;
+// }
 
 function findAllNodeModules(startDir) {
 	let dir = path.resolve(startDir);
@@ -45,6 +49,14 @@ function findAllNodeModules(startDir) {
 	}
 }
 
+function resolveTsconfig(cwd, isProd) {
+	if (existsSync(resolve(cwd, `tsconfig.${isProd ? 'prod' : 'dev'}.json`))) {
+		return resolve(cwd, `tsconfig.${isProd ? 'prod' : 'dev'}.json`);
+	} else if (existsSync(resolve(cwd, 'tsconfig.json'))) {
+		return resolve(cwd, 'tsconfig.json');
+	}
+}
+
 module.exports = function(env) {
 	const { cwd, isProd, isWatch, src, source } = env;
 
@@ -54,17 +66,47 @@ module.exports = function(env) {
 	env.pkg = readJson(resolve(cwd, 'package.json')) || {};
 
 	let babelrc = readJson(resolve(cwd, 'old')) || {};
-	let browsers = env.pkg.browserslist || ['> 0.25%', 'IE >= 9'];
+
+	// use browserslist config environment, config default, or default browsers
+	// default browsers are > 0.25% global market share or Internet Explorer >= 9
+	const browserslistDefaults = ['> 0.25%', 'IE >= 9'];
+	const browserlistConfig = Object(browserslist.findConfig(cwd));
+	const browsers =
+		(isProd ? browserlistConfig.production : browserlistConfig.development) ||
+		browserlistConfig.default ||
+		browserslistDefaults;
 
 	let userNodeModules = findAllNodeModules(cwd);
 	let cliNodeModules = findAllNodeModules(__dirname);
 	let nodeModules = [...new Set([...userNodeModules, ...cliNodeModules])];
 
+	let compat = 'preact-compat';
+	try {
+		requireRelative.resolve('preact/compat', cwd);
+		compat = 'preact/compat';
+	} catch (e) {}
+
+	let babelConfig = Object.assign(
+		{ babelrc: false },
+		createBabelConfig(env, { browsers }),
+		babelrc // intentionally overwrite our settings
+	);
+
+	let tsconfig = resolveTsconfig(cwd, isProd);
+
+	let postcssPlugins;
+
+	try {
+		postcssPlugins = loadPostcssConfig.sync(cwd).plugins;
+	} catch (error) {
+		postcssPlugins = [autoprefixer({ overrideBrowserslist: browsers })];
+	}
+
 	return {
 		context: src,
 
 		resolve: {
-			modules: ['node_modules', ...nodeModules],
+			modules: [...nodeModules, 'node_modules'],
 			extensions: [
 				'.mjs',
 				'.js',
@@ -73,22 +115,19 @@ module.exports = function(env) {
 				'.tsx',
 				'.json',
 				'.less',
+				'.pcss',
 				'.scss',
 				'.sass',
 				'.styl',
 				'.css',
+				'.wasm',
 			],
 			alias: {
 				style: source('style'),
-				'preact-cli-entrypoint': source('index.js'),
-				preact$: resolveDep(
-					isProd ? 'preact/dist/preact.min.js' : 'preact',
-					cwd
-				),
+				'preact-cli-entrypoint': source('index'),
 				// preact-compat aliases for supporting React dependencies:
-				react: 'preact-compat',
-				'react-dom': 'preact-compat',
-				'create-react-class': 'preact-compat/lib/create-react-class',
+				react: compat,
+				'react-dom': compat,
 				'react-addons-css-transition-group': 'preact-css-transition-group',
 				'preact-cli/async-component': require.resolve(
 					'@preact/async-loader/async'
@@ -108,14 +147,11 @@ module.exports = function(env) {
 				{
 					// ES2015
 					enforce: 'pre',
-					test: /\.m?jsx?$/,
+					test: /\.m?[jt]sx?$/,
+					resolve: { mainFields: ['module', 'jsnext:main', 'browser', 'main'] },
 					type: 'javascript/auto',
 					loader: 'babel-loader',
-					options: Object.assign(
-						{ babelrc: false },
-						createBabelConfig(env, { browsers }),
-						babelrc // intentionally overwrite our settings
-					),
+					options: babelConfig,
 				},
 				{
 					// LESS
@@ -147,7 +183,7 @@ module.exports = function(env) {
 								loader: 'sass-loader',
 								options: {
 									sourceMap: true,
-									includePaths: [nodeModules],
+									includePaths: [...nodeModules],
 								},
 							},
 						},
@@ -173,17 +209,25 @@ module.exports = function(env) {
 				},
 				{
 					// User styles
-					test: /\.(css|less|s[ac]ss|styl)$/,
+					test: /\.(p?css|less|s[ac]ss|styl)$/,
 					include: [source('components'), source('routes')],
 					use: [
-						isWatch ? 'style-loader' : MiniCssExtractPlugin.loader,
+						isWatch
+							? {
+									loader: 'style-loader',
+									options: {
+										sourceMap: true,
+									},
+							  }
+							: MiniCssExtractPlugin.loader,
 						{
 							loader: 'css-loader',
 							options: {
-								modules: true,
-								localIdentName: '[local]__[hash:base64:5]',
+								modules: {
+									localIdentName: '[local]__[hash:base64:5]',
+								},
 								importLoaders: 1,
-								sourceMap: isProd,
+								sourceMap: true,
 							},
 						},
 						{
@@ -191,21 +235,28 @@ module.exports = function(env) {
 							options: {
 								ident: 'postcss',
 								sourceMap: true,
-								plugins: [autoprefixer({ browsers })],
+								plugins: postcssPlugins,
 							},
 						},
 					],
 				},
 				{
 					// External / `node_module` styles
-					test: /\.(css|less|s[ac]ss|styl)$/,
+					test: /\.(p?css|less|s[ac]ss|styl)$/,
 					exclude: [source('components'), source('routes')],
 					use: [
-						isWatch ? 'style-loader' : MiniCssExtractPlugin.loader,
+						isWatch
+							? {
+									loader: 'style-loader',
+									options: {
+										sourceMap: true,
+									},
+							  }
+							: MiniCssExtractPlugin.loader,
 						{
 							loader: 'css-loader',
 							options: {
-								sourceMap: isProd,
+								sourceMap: true,
 							},
 						},
 						{
@@ -213,7 +264,7 @@ module.exports = function(env) {
 							options: {
 								ident: 'postcss',
 								sourceMap: true,
-								plugins: [autoprefixer({ browsers })],
+								plugins: postcssPlugins,
 							},
 						},
 					],
@@ -240,6 +291,8 @@ module.exports = function(env) {
 				h: ['preact', 'h'],
 				Fragment: ['preact', 'Fragment'],
 			}),
+			// Fix for https://github.com/webpack-contrib/mini-css-extract-plugin/issues/151
+			new FixStyleOnlyEntriesPlugin(),
 			// Extract CSS
 			new MiniCssExtractPlugin({
 				filename: isProd ? '[name].[contenthash:5].css' : '[name].css',
@@ -249,14 +302,23 @@ module.exports = function(env) {
 			}),
 			new ProgressBarPlugin({
 				format:
-					'\u001b[90m\u001b[44mBuild\u001b[49m\u001b[39m [:bar] \u001b[32m\u001b[1m:percent\u001b[22m\u001b[39m (:elapseds) \u001b[2m:msg\u001b[22m',
+					'\u001b[97m\u001b[44m Build \u001b[49m\u001b[39m [:bar] \u001b[32m\u001b[1m:percent\u001b[22m\u001b[39m (:elapseds) \u001b[2m:msg\u001b[22m',
 				renderThrottle: 100,
 				summary: false,
 				clear: true,
 			}),
 			new SizePlugin(),
-		].concat(
-			isProd
+			...(tsconfig
+				? [
+						new ForkTsCheckerWebpackPlugin({
+							checkSyntacticErrors: true,
+							async: !isProd,
+							tsconfig: tsconfig,
+							silent: !isWatch,
+						}),
+				  ]
+				: []),
+			...(isProd
 				? [
 						new webpack.HashedModuleIdsPlugin(),
 						new webpack.LoaderOptionsPlugin({ minimize: true }),
@@ -273,8 +335,8 @@ module.exports = function(env) {
 							],
 						}),
 				  ]
-				: []
-		),
+				: []),
+		],
 
 		optimization: {
 			splitChunks: {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
+const envinfo = require('envinfo');
 const sade = require('sade');
-global.Promise = require('bluebird');
 const notifier = require('update-notifier');
 const { error } = require('./util');
 const pkg = require('../package');
@@ -51,6 +51,7 @@ prog
 	)
 	.option('-c, --config', 'Path to custom CLI config', 'preact.config.js')
 	.option('--esm', 'Builds ES-2015 bundles for your code.', true)
+	.option('--brotli', 'Adds brotli redirects to the service worker.', false)
 	.option('--inline-css', 'Adds critical css to the prerendered markup.', true)
 	.option('-v, --verbose', 'Verbose output')
 	.action(commands.build);
@@ -78,6 +79,7 @@ prog
 	.option('--src', 'Specify source directory', 'src')
 	.option('--cwd', 'A directory to use instead of $PWD', '.')
 	.option('--esm', 'Builds ES-2015 bundles for your code.', true)
+	.option('--clear', 'Clear the console', true)
 	.option('--sw', 'Generate and attach a Service Worker', false)
 	.option('--rhl', 'Enable react hot loader', false)
 	.option('--json', 'Generate build stats for bundle analysis')
@@ -91,5 +93,28 @@ prog
 	.option('-H, --host', 'Set server hostname', '0.0.0.0')
 	.option('-p, --port', 'Set server port', 8080)
 	.action(commands.watch);
+
+prog
+	.command('info')
+	.describe('Print out debugging information about the local environment')
+	.action(() => {
+		console.log();
+		console.log('Environment Info:');
+		envinfo
+			.run({
+				System: ['OS', 'CPU'],
+				Binaries: ['Node', 'Yarn', 'npm'],
+				Browsers: ['Chrome', 'Edge', 'Firefox', 'Safari'],
+				npmPackages: [
+					'preact',
+					'preact-compat',
+					'preact-cli',
+					'preact-router',
+					'preact-render-to-string',
+				],
+				npmGlobalPackages: ['preact-cli'],
+			})
+			.then(console.log);
+	});
 
 prog.parse(process.argv);

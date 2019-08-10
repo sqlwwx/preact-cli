@@ -5,16 +5,17 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 const prerender = require('./prerender');
 const createLoadManifest = require('./create-load-manifest');
 const { warn } = require('../../util');
+const { info } = require('../../util');
 let template = resolve(__dirname, '../../resources/template.html');
 
-module.exports = function(config) {
+module.exports = async function(config) {
 	const { cwd, dest, isProd, src } = config;
-	const inProjectTemplatePath = resolve(cwd, dest, '../template.html');
+	const inProjectTemplatePath = resolve(src, 'template.html');
 	if (existsSync(inProjectTemplatePath)) {
 		template = inProjectTemplatePath;
 	}
 	const htmlWebpackConfig = values => {
-		let { url, title } = values;
+		const { url, title, ...routeData } = values;
 		return Object.assign(values, {
 			filename: resolve(dest, url.substring(1), 'index.html'),
 			template: `!!ejs-loader!${config.template || template}`,
@@ -27,7 +28,7 @@ module.exports = function(config) {
 			},
 			favicon: existsSync(resolve(src, 'assets/favicon.ico'))
 				? 'assets/favicon.ico'
-				: resolve(__dirname, '../../resources/favicon.ico'),
+				: '',
 			inject: true,
 			compile: true,
 			inlineCss: config['inline-css'],
@@ -53,6 +54,7 @@ module.exports = function(config) {
 				return config.prerender ? prerender({ cwd, dest, src }, values) : '';
 			},
 			scriptLoading: 'defer',
+			CLI_DATA: { preRenderData: { url, ...routeData } },
 		});
 	};
 
@@ -66,7 +68,9 @@ module.exports = function(config) {
 					result = result.default();
 				}
 				if (typeof result === 'function') {
-					result = result();
+					info(`Fetching URLs from ${config.prerenderUrls}`);
+					result = await result();
+					info(`Fetched URLs from ${config.prerenderUrls}`);
 				}
 				if (typeof result === 'string') {
 					result = JSON.parse(result);
